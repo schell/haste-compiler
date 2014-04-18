@@ -16,6 +16,7 @@ import qualified Codec.Archive.Zip as Zip
 import Haste.Environment
 import Haste.Version
 import Control.Shell
+import Data.List (isPrefixOf)
 import Data.Char (isDigit)
 import Control.Monad.IO.Class (liftIO)
 
@@ -29,7 +30,7 @@ downloadFile f = do
         rqHeaders = [],
         rqBody = BS.empty
       }
-  case rspCode rsp of 
+  case rspCode rsp of
     (2, _, _) -> return $ rspBody rsp
     _         -> fail $ "Failed to download " ++ f ++ ": " ++ rspReason rsp
 
@@ -120,20 +121,33 @@ buildLibs cfg = do
     mkdir True $ pkgLibDir
     cpDir "include" hasteDir
     run_ hastePkgBinary ["update", "libraries" </> "rts.pkg"] ""
-    
+
+    -- Figure out what version of ghc we're using
+    ghcVerStr <- fmap words $ run "/usr/local/bin/ghc" ["--version"] ""
+    -- | TODO: Make this work for future versions of GHC
+    let isGHC78 = case reverse ghcVerStr of
+                    vStr:_ -> "7.8" `isPrefixOf` vStr
+                    _      -> False
+
     inDirectory "libraries" $ do
       -- Install ghc-prim
-      inDirectory "ghc-prim" $ do
+      let primVer = if isGHC78 then "ghc-prim-0.3.1.0" else "ghc-prim-0.3.0.0"
+          primDir = if isGHC78 then "ghc-prim-0.3.1.0" else "ghc-prim"
+      inDirectory primDir $ do
+        liftIO $ putStrLn $ "Configuring " ++ primVer
         hasteInst ["configure"]
+        liftIO $ putStrLn $ "Building " ++ primVer
         hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
-        run_ hasteInstHisBinary ["ghc-prim-0.3.0.0", "dist" </> "build"] ""
+        liftIO $ putStrLn $ "Installing " ++ primVer
+        run_ hasteInstHisBinary [primVer, "dist" </> "build"] ""
+        liftIO $ putStrLn $ "Updating package " ++ primVer
         run_ hastePkgBinary ["update", "packageconfig"] ""
-      
+
       -- Install integer-gmp; double install shouldn't be needed anymore.
       run_ hasteCopyPkgBinary ["Cabal"] ""
       inDirectory "integer-gmp" $ do
         hasteInst ("install" : ghcOpts)
-      
+
       -- Install base
       inDirectory "base" $ do
         basever <- file "base.cabal" >>= return
@@ -148,7 +162,7 @@ buildLibs cfg = do
             pkgdb = "--package-db=dist" </> "package.conf.inplace"
         run_ hasteInstHisBinary [base, "dist" </> "build"] ""
         run_ hasteCopyPkgBinary [base, pkgdb] ""
-      
+
       -- Install array, fursuit and haste-lib
       forM_ ["array", "fursuit", "haste-lib"] $ \pkg -> do
         inDirectory pkg $ hasteInst ("install" : ghcOpts)
