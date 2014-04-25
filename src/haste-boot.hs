@@ -19,6 +19,7 @@ import Control.Shell
 import Data.List (isPrefixOf)
 import Data.Char (isDigit)
 import Control.Monad.IO.Class (liftIO)
+import Args
 
 downloadFile :: String -> Shell BS.ByteString
 downloadFile f = do
@@ -38,40 +39,67 @@ data Cfg = Cfg {
     getLibs      :: Bool,
     getClosure   :: Bool,
     useLocalLibs :: Bool,
-    tracePrimops :: Bool
+    tracePrimops :: Bool,
+    forceBoot    :: Bool
   }
+
+defCfg :: Cfg
+defCfg = Cfg {
+    getLibs = True,
+    getClosure = True,
+    useLocalLibs = False,
+    tracePrimops = False,
+    forceBoot = False
+  }
+
+specs :: [ArgSpec Cfg]
+specs = [
+    ArgSpec { optName = "force",
+              updateCfg = \cfg _ -> cfg {forceBoot = True},
+              info = "Re-boot Haste even if already properly booted."},
+    ArgSpec { optName = "local",
+              updateCfg = \cfg _ -> cfg {useLocalLibs = True},
+              info = "Use libraries from source repository rather than " ++
+                     "downloading a matching set from the Internet. " ++
+                     "This is nearly always necessary when installing " ++
+                     "Haste from Git rather than from Hackage. " ++
+                     "When using --local, your current working directory " ++
+                     "must be the root of the Haste source tree."},
+    ArgSpec { optName = "no-closure",
+              updateCfg = \cfg _ -> cfg {getClosure = False},
+              info = "Don't download Closure compiler. You won't be able " ++
+                     "to use --opt-google-closure, unless you manually " ++
+                     "give it the path to compiler.jar."},
+    ArgSpec { optName = "no-libs",
+              updateCfg = \cfg _ -> cfg {getLibs = False},
+              info = "Don't install any libraries. This is probably not " ++
+                     "what you want."},
+    ArgSpec { optName = "trace-primops",
+              updateCfg = \cfg _ -> cfg {tracePrimops = True},
+              info = "Build standard libs for tracing of primitive " ++
+                     "operations. Only use if you're debugging the code " ++
+                     "generator."}
+  ]
 
 main :: IO ()
 main = do
   args <- getArgs
-  -- Always get base and closure when forced unless explicitly asked not to;
-  -- if not forced, get base and closure when necessary, unless asked not to.
-  let forceBoot = elem "--force" args
-      libs      = if elem "--no-libs" args
-                     then False
-                     else forceBoot || needsReboot
-      closure   = if elem "--no-closure" args
-                     then False
-                     else forceBoot || needsReboot
-      local     = elem "--local" args
-      trace     = elem "--trace-primops" args
-      cfg = Cfg {
-          getLibs      = libs,
-          getClosure   = closure,
-          useLocalLibs = local,
-          tracePrimops = trace
-        }
-
-  when (needsReboot || forceBoot) $ do
-    res <- shell $ if local
-                     then bootHaste cfg "."
-                     else withTempDirectory "haste" $ bootHaste cfg
-    case res of
-      Right _  -> return ()
-      Left err -> putStrLn err >> exitFailure
+  case handleArgs defCfg specs args of
+    Right (cfg, _) -> do
+      when (needsReboot || forceBoot cfg) $ do
+        res <- shell $ if useLocalLibs cfg
+                         then bootHaste cfg "."
+                         else withTempDirectory "haste" $ bootHaste cfg
+        case res of
+          Right _  -> return ()
+          Left err -> putStrLn err >> exitFailure
+    Left halp -> do
+      putStrLn halp
 
 bootHaste :: Cfg -> FilePath -> Shell ()
 bootHaste cfg tmpdir = inDirectory tmpdir $ do
+  removeBootFile <- isFile bootFile
+  when removeBootFile $ rm bootFile
   when (getLibs cfg) $ do
     when (not $ useLocalLibs cfg) $ do
       fetchLibs tmpdir
@@ -135,7 +163,7 @@ buildLibs cfg = do
           primDir = if isGHC78 then "ghc-prim-0.3.1.0" else "ghc-prim"
       inDirectory primDir $ do
         liftIO $ putStrLn $ "Configuring " ++ primVer
-        hasteInst ["configure"]
+        hasteInst ["configure", "--solver", "topdown"]
         liftIO $ putStrLn $ "Building " ++ primVer
         hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
         liftIO $ putStrLn $ "Installing " ++ primVer
@@ -146,8 +174,7 @@ buildLibs cfg = do
       -- Install integer-gmp; double install shouldn't be needed anymore.
       run_ hasteCopyPkgBinary ["Cabal"] ""
       inDirectory "integer-gmp" $ do
-        hasteInst ("install" : ghcOpts)
-
+        hasteInst ("install" : "--solver" : "topdown" : ghcOpts)
       -- Install base
       inDirectory "base" $ do
         basever <- file "base.cabal" >>= return
@@ -156,7 +183,7 @@ buildLibs cfg = do
           . filter (not . null)
           . filter (and . zipWith (==) "version")
           . lines
-        hasteInst ["configure"]
+        hasteInst ["configure", "--solver", "topdown"]
         hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
         let base = "base-" ++ basever
             pkgdb = "--package-db=dist" </> "package.conf.inplace"
