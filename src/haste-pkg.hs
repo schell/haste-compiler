@@ -6,14 +6,18 @@ import System.Environment
 import System.Directory
 import Haste.Environment
 
+main :: IO ()
 main = do
   args <- getArgs
   pkgDirExists <- doesDirectoryExist pkgDir
   when (not pkgDirExists) $ do
+    putStrLn "Creating package directory."
     createDirectoryIfMissing True pkgLibDir
     runAndWait "ghc-pkg" ["init", pkgDir] Nothing
-  runAndWait "ghc-pkg" (packages ++ map userToGlobal args) Nothing
+  putStrLn $ unwords $ "ghc-pkg":ghcPkgArgs args
+  runAndWait "ghc-pkg" (ghcPkgArgs args) Nothing
   where
+    ghcPkgArgs args = packages ++ map userToGlobal args
 #if __GLASGOW_HASKELL__ >= 706
     packages = ["--no-user-package-db",
                 "--global-package-db=" ++ pkgDir]
@@ -23,3 +27,4 @@ main = do
 #endif
     userToGlobal "--user" = "--global"
     userToGlobal str      = str
+
