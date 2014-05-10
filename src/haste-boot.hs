@@ -158,23 +158,41 @@ buildLibs cfg = do
                     _      -> False
 
     inDirectory "libraries" $ do
+      -- Install a copy of cabal?
+      run_ hasteCopyPkgBinary ["Cabal"] ""
+
       -- Install ghc-prim
+      liftIO $ putStrLn "Installing ghc-prim..."
       let primVer = if isGHC78 then "ghc-prim-0.3.1.0" else "ghc-prim-0.3.0.0"
           primDir = if isGHC78 then "ghc-prim-0.3.1.0" else "ghc-prim"
+          gmpVer = if isGHC78 then "integer-gmp-0.5.1.0-release" else "integer-gmp"
+          gmpDir = if isGHC78 then "integer-gmp-0.5.1.0-release" else "integer-gmp"
+          buildAndInstall name = do
+              hasteInst ["configure", "--solver", "topdown"]
+              hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
+              run_ hasteInstHisBinary [name, "dist" </> "build"] ""
+              run_ hasteCopyPkgBinary [name, "--package-db=dist" </> "package.conf.inplace"] ""
+
       inDirectory primDir $ do
-        liftIO $ putStrLn $ "Configuring " ++ primVer
-        hasteInst ["configure", "--solver", "topdown"]
-        liftIO $ putStrLn $ "Building " ++ primVer
-        hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
-        liftIO $ putStrLn $ "Installing " ++ primVer
-        run_ hasteInstHisBinary [primVer, "dist" </> "build"] ""
-        liftIO $ putStrLn $ "Updating package " ++ primVer
-        run_ hastePkgBinary ["update", "packageconfig"] ""
+        if isGHC78
+          then buildAndInstall primVer
+            --hasteInst ("install" : "--solver" : "topdown" : ghcOpts)
+          else do
+            hasteInst ["configure", "--solver", "topdown"]
+            hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
+            run_ hasteInstHisBinary [primVer, "dist" </> "build"] ""
+            run_ hastePkgBinary ["update", "packageconfig"] ""
+
 
       -- Install integer-gmp; double install shouldn't be needed anymore.
-      run_ hasteCopyPkgBinary ["Cabal"] ""
-      inDirectory "integer-gmp" $ do
+      liftIO $ putStrLn "Installing integer-gmp..."
+      inDirectory gmpDir $ do
+        when isGHC78 $ do
+          run_ "aclocal" [] ""
+          run_ "autoreconf" [] ""
+          hasteInst ["configure", "--solver", "topdown"]
         hasteInst ("install" : "--solver" : "topdown" : ghcOpts)
+
       -- Install base
       inDirectory "base" $ do
         basever <- file "base.cabal" >>= return
@@ -183,12 +201,13 @@ buildLibs cfg = do
           . filter (not . null)
           . filter (and . zipWith (==) "version")
           . lines
-        hasteInst ["configure", "--solver", "topdown"]
-        hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
+        --hasteInst ["configure", "--solver", "topdown"]
+        --hasteInst $ ["build", "--install-jsmods"] ++ ghcOpts
         let base = "base-" ++ basever
-            pkgdb = "--package-db=dist" </> "package.conf.inplace"
-        run_ hasteInstHisBinary [base, "dist" </> "build"] ""
-        run_ hasteCopyPkgBinary [base, pkgdb] ""
+        buildAndInstall base
+        --    pkgdb = "--package-db=dist" </> "package.conf.inplace"
+        --run_ hasteInstHisBinary [base, "dist" </> "build"] ""
+        --run_ hasteCopyPkgBinary [base, pkgdb] ""
 
       -- Install array, fursuit and haste-lib
       forM_ ["array", "fursuit", "haste-lib"] $ \pkg -> do
